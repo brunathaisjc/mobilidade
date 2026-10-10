@@ -1,0 +1,8 @@
+{
+  "transitFeeds": [
+    { "type": "gtfs", "feedId": "1", "source": "gtfs-rmtc.zip" }
+  ],
+  "osm": [{ "source": "goias.osm.pbf" }],
+  "transitServiceStart": "-P1M",
+  "transitServiceEnd": "P12M"
+}

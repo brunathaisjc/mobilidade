@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+.env
+*.log
+.DS_Store
+storage/
+infra/otp/*.pbf
+infra/otp/graph.obj
+apps/web/dist/
+data/gtfs-sample/*.txt

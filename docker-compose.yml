@@ -1,0 +1,99 @@
+# Ambiente local completo: `docker compose up --build`  →  http://localhost:8080
+# Perfil "otp" adiciona o OpenTripPlanner (requer infra/otp/goias.osm.pbf; ver docs/08-implantacao-e-operacao.md).
+name: mobigo
+
+x-api-env: &api-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://mobi:mobi@db:5432/mobilidade
+  REDIS_URL: redis://redis:6379
+  JWT_SECRET: ${JWT_SECRET:-troque-este-segredo-em-producao-0123456789}
+  PUBLIC_WEB_URL: http://localhost:8080
+  STORAGE_DRIVER: s3
+  S3_BUCKET: avatars
+  S3_ENDPOINT: http://minio:9000
+  S3_PUBLIC_URL: http://localhost:9000/avatars
+  AWS_ACCESS_KEY_ID: mobigo
+  AWS_SECRET_ACCESS_KEY: mobigo-secret
+  OTP_URL: ${OTP_URL:-}
+
+services:
+  db:
+    # PostgreSQL 16 + PostGIS + TimescaleDB na mesma imagem
+    image: timescale/timescaledb-ha:pg16
+    environment:
+      POSTGRES_USER: mobi
+      POSTGRES_PASSWORD: mobi
+      POSTGRES_DB: mobilidade
+    ports: ["5432:5432"]
+    volumes: [db-data:/home/postgres/pgdata/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mobi -d mobilidade"]
+      interval: 5s
+      retries: 20
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "512mb", "--maxmemory-policy", "volatile-ttl"]
+    ports: ["6379:6379"]
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ":9001"
+    environment: { MINIO_ROOT_USER: mobigo, MINIO_ROOT_PASSWORD: mobigo-secret }
+    ports: ["9000:9000", "9001:9001"]
+    volumes: [minio-data:/data]
+
+  minio-setup:
+    image: minio/mc:RELEASE.2025-04-16T18-13-26Z
+    depends_on: [minio]
+    entrypoint: >
+      sh -c "until mc alias set local http://minio:9000 mobigo mobigo-secret; do sleep 1; done;
+             mc mb -p local/avatars && mc anonymous set download local/avatars"
+
+  # Migrações + carga do GTFS de amostra (executa e termina)
+  setup:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    environment: *api-env
+    depends_on: { db: { condition: service_healthy } }
+    command: >
+      sh -c "node dist/scripts/migrate.js &&
+             node dist/scripts/generate-sample-gtfs.js /tmp/gtfs &&
+             node dist/scripts/load-gtfs.js --dir /tmp/gtfs --vehicle-positions-url http://simulator:8090/gtfs-rt/vehicle-positions"
+
+  api:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    environment: *api-env
+    depends_on:
+      setup: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+    ports: ["3000:3000"]
+
+  ingestor:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    environment: *api-env
+    command: ["node", "dist/workers/gtfsrt-ingestor.js"]
+    depends_on: { setup: { condition: service_completed_successfully } }
+    deploy: { replicas: 2 } # líder por feed via lock no Redis; a segunda réplica é standby
+
+  simulator:
+    build: { context: ., dockerfile: apps/api/Dockerfile }
+    environment: *api-env
+    command: ["node", "dist/workers/simulator.js"]
+    depends_on: { setup: { condition: service_completed_successfully } }
+
+  web:
+    build: { context: ., dockerfile: apps/web/Dockerfile }
+    depends_on: [api]
+    ports: ["8080:80"]
+
+  otp:
+    profiles: ["otp"]
+    image: opentripplanner/opentripplanner:2.6.0
+    command: ["--load", "--serve"]
+    volumes: ["./infra/otp:/var/opentripplanner"]
+    environment: { JAVA_TOOL_OPTIONS: "-Xmx6g" }
+    ports: ["8081:8080"]
+
+volumes:
+  db-data:
+  minio-data:

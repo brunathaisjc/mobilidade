@@ -1,0 +1,15 @@
+{
+  "routingDefaults": {
+    "walkSpeed": 1.2,
+    "transferSlack": "2m",
+    "numItineraries": 8
+  },
+  "updaters": [
+    {
+      "type": "vehicle-positions",
+      "feedId": "1",
+      "url": "http://simulator:8090/gtfs-rt/vehicle-positions",
+      "frequency": "10s"
+    }
+  ]
+}
